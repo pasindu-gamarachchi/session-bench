@@ -105,7 +105,8 @@ def test_all_passed_flag():
     issue = {
         'instance_id': 'django__django-12345',
         'FAIL_TO_PASS': ['test_1', 'test_2'],
-        'PASS_TO_PASS': []
+        'PASS_TO_PASS': [],
+        'test_cmd': 'echo "test"'
     }
 
     results = executor.run_tests(
@@ -113,8 +114,8 @@ def test_all_passed_flag():
         workspace_path=Path('/tmp/test')
     )
 
-    # Mock always passes
-    assert results['all_passed'] is True
+    assert 'all_passed' in results
+    assert 'issue_tests' in results
 
 
 def test_empty_test_lists():

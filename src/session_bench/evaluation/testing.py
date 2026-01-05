@@ -1,13 +1,14 @@
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import logging
+import subprocess
 
 logger = logging.getLogger(__name__)
 
 
 class TestExecutor:
     """
-    Executes tests sign SWE-bench test harness.
+    Executes tests in workspace for multi-issue sessions.
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -18,13 +19,40 @@ class TestExecutor:
         self.random_sample_size = config.get('random_sample_size', 20)
         self.test_timeout = config.get('test_timeout', 300)
 
+        # self._check_docker_available()
         logger.info(f"TestExecutor initialized: issue={self.enable_issue_tests}, "
-                   f"regression={self.enable_regression_tests}, "
-                   f"sample={self.enable_random_sample}")
+                    f"regression={self.enable_regression_tests}, "
+                    f"sample={self.enable_random_sample}")
 
-    def run_tests(self, issue: Dict[str, Any], workspace_path: Path, previous_issues: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    # def _check_docker_available_DEFUNCT(self) -> bool:
+    #    """
+    #    DEFUNCT
+    #    Check if docker is installed
+    #    """
+    #    try:
+    #        result = subprocess.run(['docker', '--version'], capture_output=True, timeout=5)
+    #
+    #        if result.returncode != 0:
+    #            raise RuntimeError(
+    #                "Docker is not available. Docker is required for SWE-bench test execution.\n"
+    #                "Install Docker!"
+    #            )
+    #        logger.info("Docker is available")
+    #
+    #    except FileNotFoundError:
+    #        raise RuntimeError(
+    #            "Docker is not available. Docker is required for SWE-bench test execution.\n"
+    #            "Install Docker!"
+    #        )
+    #    except subprocess.TimeoutExpired:
+    #        raise RuntimeError(
+    #            "Docker command timed out."
+    #        )
+
+    def run_tests(self, issue: Dict[str, Any], workspace_path: Path,
+                  previous_issues: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
-        Run all configured test tiers for an issue.
+        Run all configured tests types for an issue.
 
         Args:
             issue: SWE-bench issue dictionary
@@ -40,8 +68,8 @@ class TestExecutor:
                     'total': int,
                     'tests': [{'name': str, 'status': str, 'output': str}]
                 },
-                'regression_tests': {...},  # If enabled
-                'sampled_tests': {...}      # If enabled
+                'regression_tests': {...},
+                'sampled_tests': {...}
             }
         """
         if previous_issues is None:
@@ -120,6 +148,7 @@ class TestExecutor:
         Args:
             previous_issues: List of completed issues
             workspace_path: Path to workspace
+            current_issue: Current issue
 
         Returns:
             Test results dictionary
@@ -140,12 +169,8 @@ class TestExecutor:
 
         logger.info(f"Running {len(all_regression_tests)} regression tests")
 
-        # Run tests (use first issue for context - doesn't really matter which)
-        test_results = self._execute_tests(
-            all_regression_tests,
-            workspace_path,
-            previous_issues[0] if previous_issues else {}
-        )
+        test_results = self._execute_tests(all_regression_tests, workspace_path,
+                                           previous_issues[0] if previous_issues else {})
 
         return test_results
 
@@ -173,50 +198,291 @@ class TestExecutor:
 
     def _execute_tests(self, test_list: List[str], workspace_path: Path, issue: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute a list of tests using SWE-bench harness.
-        This is the core test execution logic that interfaces with SWE-bench.
+        Execute tests.
 
         Args:
-            test_list: List of test identifiers (e.g., 'test_module.TestClass.test_method')
+            test_list: List of test identifiers
             workspace_path: Path to workspace
-            issue: Issue dictionary (for context)
-
+            issue: Issue dictionary
         Returns:
-            {
-                'passed': int,
-                'failed': int,
-                'total': int,
-                'tests': [
-                    {
-                        'name': str,
-                        'status': 'passed'|'failed'|'error',
-                        'output': str
-                    }
-                ]
-            }
+            Test results dictionary
         """
-        # TODO: Implement actual SWE-bench integration
-        # For now, return mock results
-
         logger.info(f"Executing {len(test_list)} tests in {workspace_path}")
+        test_cmd_template = issue.get('test_cmd', 'pytest {test} -xvs')
 
-        # Mock implementation - will be replaced with real SWE-bench integration
         passed = 0
         failed = 0
         test_results = []
 
         for test_name in test_list:
-            # Mock: assume all tests pass for now
-            test_results.append({
-                'name': test_name,
-                'status': 'passed',
-                'output': 'Test passed (mock)'
-            })
-            passed += 1
+            try:
+                cmd = test_cmd_template.replace('{test}', test_name)
+                result = subprocess.run(cmd, cwd=workspace_path, capture_output=True, text=True,
+                                        timeout=self.test_timeout, shell=True)
+                if result.returncode == 0:
+                    status = 'passed'
+                    passed += 1
+                else:
+                    status = 'failed'
+                    failed += 1
 
-        return {
-            'passed': passed,
-            'failed': failed,
-            'total': len(test_list),
-            'tests': test_results
-        }
+                test_results.append({
+                    'name': test_name,
+                    'status': status,
+                    'output': result.stdout + result.stderr
+                })
+
+
+            except subprocess.TimeoutExpired:
+                test_results.append({
+                    'name': test_name,
+                    'status': 'timeout',
+                    'output': f'Test timed out after {self.test_timeout}s'
+                })
+
+                failed += 1
+
+
+            except Exception as err:
+
+                test_results.append({
+                    'name': test_name,
+                    'status': 'error',
+                    'output': f'Test execution error: {err}'
+                })
+
+                failed += 1
+
+        return {'passed': passed,
+                'failed': failed,
+                'total': len(test_list),
+                'tests': test_results}
+
+    # def _execute_tests_direct_DEFUNCT(self, test_list: List[str], workspace_path: Path, issue: Dict[str, Any]) -> Dict[str, Any]:
+    #    """
+    #    Execute tests directly using pytest (fallback)
+    #    Args:
+    #        test_list: List of test identifiers
+    #        workspace_path: Path to workspace
+    #        issue: Issue dictionary
+    #    Returns:
+    #        Test results dictionary
+    #    """
+    #    logger.info(f"Executing {len(test_list)} tests directly via pytest")
+
+    #   passed = 0
+    #    failed = 0
+    #    test_results = []
+
+    #    for test_name in test_list:
+    #        try:
+    #            pytest_path = self._convert_to_pytest_path(test_name)
+    #            result = subprocess.run(
+    #                ['pytest', pytest_path, '-v', '--tb=short'],
+    #                cwd=workspace_path,
+    #                capture_output=True,
+    #                text=True,
+    #                timeout=self.test_timeout
+    #            )
+
+    #            if result.returncode == 0:
+    #                status = 'passed'
+    #                passed += 1
+    #            else:
+    #                status = 'failed'
+    #                failed += 1
+
+    #            test_results.append({
+    #                'name': test_name,
+    #                'status': status,
+    #                'output': result.stdout + result.stderr
+    #            })
+
+    #        except Exception as err:
+    #            test_results.append({
+    #                'name': test_name,
+    #                'status': 'error',
+    #                'output': f'Test execution error: {err}'
+    #            })
+    #            failed += 1
+
+    #    return {
+    #        'passed': passed,
+    #        'failed': failed,
+    #        'total': len(test_list),
+    #        'tests': test_results
+    #    }
+
+    # def _create_test_spec_DEFUNCT(self, issue: Dict[str, Any], workspace_path: Path, test_list: List[str]) -> Dict[str, Any]:
+    #    """
+    #    Create SWE-bench test specification.
+    #    Args:
+    #        issue: Issue dictionary
+    #        workspace_path: Path to workspace
+    #        test_list: List of tests to run
+    #    Returns:
+    #        Test specification dictionary
+    #    """
+
+    #    test_spec = {
+    #        'instance_id': issue['instance_id'],
+    #        'repo': issue.get('repo', 'django/django'),
+    #        'base_commit': issue.get('base_commit', ''),
+    #        'test_patch': '',
+    #        'environment_setup_commit': issue.get('base_commit', ''),
+    #        'FAIL_TO_PASS': test_list,
+    #        'PASS_TO_PASS': []
+    #    }
+
+    #    return test_spec
+
+    # def _parse_swebench_results(self, swebench_results: Any, test_list: List[str], issue: Dict[str, Any]) -> Dict[str, Any]:
+    #    """
+    #    Parse SWE-bench test results.
+    #    Args:
+    #        swebench_results: Results from SWE-bench
+    #        test_list: Original test list
+    #    Returns:
+    #        Standardized test results
+    #    """
+    #    logger.info("Parsing SWE-bench results...")
+
+    #    try:
+    #        instance_id = issue['instance_id']
+
+    #        if isinstance(swebench_results, dict):
+    #            instance_result = swebench_results.get(instance_id, {})
+    #        elif isinstance(swebench_results, list) and len(swebench_results) > 0:
+    #            instance_result = swebench_results[0]
+    #        else:
+    #            logger.warning(f"Unexpected result format: {type(swebench_results)}")
+    #            instance_result = {}
+
+    #        resolved = instance_result.get('resolved', False)
+    #        test_output = instance_result.get('test_result', '')
+
+    #        logger.info(f"SWE-bench result - Resolved: {resolved}")
+
+    #        test_results = []
+    #        passed = 0
+    #        failed = 0
+
+    #        if resolved:
+    #            passed = len(test_list)
+    #            for test_name in test_list:
+    #                test_results.append({
+    #                    'name': test_name,
+    #                    'status': 'passed',
+    #                    'output': test_output
+    #                })
+    #        else:
+    #            failed = len(test_list)
+    #            for test_name in test_list:
+    #                status = 'failed'
+    #                if test_name in test_output and 'PASSED' in test_output:
+    #                    status = 'passed'
+    #                    passed += 1
+    #                    failed -= 1
+
+    #                test_results.append({
+    #                    'name': test_name,
+    #                    'status': status,
+    #                    'output': test_output
+    #                })
+
+    #        return {
+    #            'passed': passed,
+    #            'failed': failed,
+    #            'total': len(test_list),
+    #            'tests': test_results,
+    #            'swebench_resolved': resolved,
+    #            'swebench_output': test_output
+    #        }
+
+    #    except Exception as err:
+    #        logger.error(f"Error parsing SWE-bench results: {err}")
+
+    # return {
+    #     'passed': 0,
+    #     'failed': len(test_list),
+    #     'total': len(test_list),
+    #     'tests': [
+    #         {
+    #             'name': test,
+    #             'status': 'error',
+    #             'output': f'Result parsing error: {err}'
+    #         }
+    #         for test in test_list
+    #     ],
+    #     'error': str(err)
+    # }
+
+    # def _convert_to_pytest_path_DEFUNCT(self, test_identifier: str) -> str:
+    #     """
+    #     Convert test identifier to pytest path.
+    #     """
+    #     parts = test_identifier.split('.')
+    #
+    #     if len(parts) < 2:
+    #         return test_identifier
+    #
+    #     directory = parts[0]
+    #     module = parts[1]
+    #
+    #     pytest_path = f"{directory}/{module}.py"
+    #
+    #     if len(parts) > 2:
+    #         pytest_path += "::" + "::".join(parts[2:])
+    #
+    #     return pytest_path
+
+    # def _execute_tests__DEFUNCT(self, test_list: List[str], workspace_path: Path, issue: Dict[str, Any]) -> Dict[str, Any]:
+    #     """
+    #     DEFUNCT
+    #     Execute a list of tests using SWE-bench harness.
+    #     This is the core test execution logic that interfaces with SWE-bench.
+    #
+    #     Args:
+    #         test_list: List of test identifiers (e.g., 'test_module.TestClass.test_method')
+    #         workspace_path: Path to workspace
+    #         issue: Issue dictionary (for context)
+    #
+    #     Returns:
+    #         {
+    #             'passed': int,
+    #             'failed': int,
+    #             'total': int,
+    #             'tests': [
+    #                 {
+    #                     'name': str,
+    #                     'status': 'passed'|'failed'|'error',
+    #                     'output': str
+    #                 }
+    #             ]
+    #         }
+    #     """
+    #     # TODO: Implement actual SWE-bench integration
+    #     # For now, return mock results
+    #
+    #     logger.info(f"Executing {len(test_list)} tests in {workspace_path}")
+    #
+    #     # Mock implementation - will be replaced with real SWE-bench integration
+    #     passed = 0
+    #     failed = 0
+    #     test_results = []
+    #
+    #     for test_name in test_list:
+    #         # Mock: assume all tests pass for now
+    #         test_results.append({
+    #             'name': test_name,
+    #             'status': 'passed',
+    #             'output': 'Test passed (mock)'
+    #         })
+    #         passed += 1
+    #
+    #     return {
+    #         'passed': passed,
+    #         'failed': failed,
+    #         'total': len(test_list),
+    #         'tests': test_results
+    #     }

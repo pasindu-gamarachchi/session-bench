@@ -197,19 +197,22 @@ def test_run_session_multiple_issues(temp_config):
                 'instance_id': 'test-001',
                 'problem_statement': 'Issue 1',
                 'FAIL_TO_PASS': ['test_1'],
-                'PASS_TO_PASS': []
+                'PASS_TO_PASS': [],
+                'test_cmd': 'echo "pass"'  # ← Add this
             },
             {
                 'instance_id': 'test-002',
                 'problem_statement': 'Issue 2',
                 'FAIL_TO_PASS': ['test_2'],
-                'PASS_TO_PASS': []
+                'PASS_TO_PASS': [],
+                'test_cmd': 'echo "pass"'  # ← Add this
             },
             {
                 'instance_id': 'test-003',
                 'problem_statement': 'Issue 3',
                 'FAIL_TO_PASS': ['test_3'],
-                'PASS_TO_PASS': []
+                'PASS_TO_PASS': [],
+                'test_cmd': 'echo "pass"'  # ← Add this
             }
         ]
     }
