@@ -58,38 +58,71 @@ class RepositoryManager:
             logger.warning(f"Workspace already exists, cleaning: {workspace_path}")
             shutil.rmtree(workspace_path)
 
-        workspace_path.mkdir(parents=True, exist_ok=True)
+        self._clone_repository(repo_url, workspace_path)
+        self._checkout_commit(workspace_path, base_commit)
+
+        installation_success = self._install_dependencies(workspace_path)
+        if not installation_success:
+            logger.warning("Dependency installation failed - tests may not run correctly")
+
+        self._create_checkpoint(workspace_path=workspace_path, checkpoint_name="initial",
+                                message="Initial repository state")
+
+        logger.info(f"Repository ready at {workspace_path}")
+        return workspace_path
+
+    def _clone_repository(self, repo_url: str, workspace_path: Path):
+        """
+        Clone a git repository.
+        Args:
+            repo_url: Git repository URL
+            workspace_path: Destination path
+        Raises:
+            RuntimeError: If cloning fails
+        """
+        logger.info(f"Cloning {repo_url} into {workspace_path}")
 
         try:
-            logger.info(f"Cloning {repo_url} into {workspace_path}")
-            subprocess.run(
-                ["git", "clone", repo_url, str(workspace_path)],
-                check=True,
-                capture_output=True,
-                text=True
-            )
+            subprocess.run(["git", "clone", repo_url, str(workspace_path)], check=True, capture_output=True, text=True,
+                           timeout=600)
+        except subprocess.CalledProcessError as err:
+            raise RuntimeError(f"Failed to clone repository: {err.stderr}")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Repository clone timed out after 10 minutes")
 
-            logger.info(f"Checking out commit {base_commit[:8]}...")
-            subprocess.run(
-                ["git", "checkout", base_commit],
-                cwd=workspace_path,
-                check=True,
-                capture_output=True,
-                text=True
-            )
+    def _checkout_commit(self, workspace_path: Path, commit: str):
+        """
+        Checkout a specific commit.
+        Args:
+            workspace_path: Repository path
+            commit: Commit to checkout
+        Raises:
+            RuntimeError: If checkout fails
+        """
+        logger.info(f"Checking out commit {commit[:8]}...")
 
-            self._create_checkpoint(
-                workspace_path,
-                f"Initial state at {base_commit[:8]}"
-            )
+        try:
+            subprocess.run(["git", "checkout", commit], cwd=workspace_path, check=True, capture_output=True, text=True)
+            logger.info(f"Repository ready at {workspace_path}")
+        except subprocess.CalledProcessError as err:
+            raise RuntimeError(f"Failed to checkout commit {commit}: {err.stderr}")
 
-            self.current_workspace = workspace_path
-            logger.info(f"✓ Repository ready at {workspace_path}")
+    def _create_checkpoint(self, workspace_path: Path, checkpoint_name: str, message: str):
+        """
+        Create a git commit checkpoint.
+        Args:
+            workspace_path: Repository path
+            checkpoint_name: Name for the checkpoint
+            message: Commit message
+        """
+        try:
+            subprocess.run(["git", "add", "-A"], cwd=workspace_path, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", message, "--allow-empty"], cwd=workspace_path, check=True,
+                           capture_output=True)
 
-            return workspace_path
-
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to setup repository: {e.stderr}")
+            logger.debug(f"Created checkpoint: {checkpoint_name}")
+        except subprocess.CalledProcessError as err:
+            logger.warning(f"Failed to create checkpoint: {err}")
 
     def apply_patch(self, patch: str, issue_id: str, workspace_path: Optional[Path] = None) -> Dict[str, Any]:
         """
@@ -121,11 +154,11 @@ class RepositoryManager:
 
         try:
             patch_file.write_text(patch)
-        except Exception as e:
+        except Exception as err:
             return {
                 'applied': False,
                 'checkpoint': None,
-                'error': f'Failed to write patch file: {e}'
+                'error': f'Failed to write patch file: {err}'
             }
 
         try:
@@ -179,54 +212,54 @@ class RepositoryManager:
                 'error': f'Git apply failed: {e.stderr}'
             }
 
-    def _create_checkpoint(self, workspace_path: Path, message: str) -> str:
-        """
-        Create Git checkpoint (commit).
+    # def _create_checkpoint(self, workspace_path: Path, message: str) -> str:
+    #    """
+    #    Create Git checkpoint (commit).
 
-        Args:
-            workspace_path: path to workspace
-            message: commit message
+    #    Args:
+    #        workspace_path: path to workspace
+    #        message: commit message
 
-        Returns:
-            git commit hash
-        """
-        try:
-            subprocess.run(
-                ["git", "add", "-A"],
-                cwd=workspace_path,
-                check=True,
-                capture_output=True
-            )
+    #    Returns:
+    #        git commit hash
+    #    """
+    #    try:
+    #        subprocess.run(
+    #            ["git", "add", "-A"],
+    #            cwd=workspace_path,
+    #            check=True,
+    #            capture_output=True
+    #        )
 
-            subprocess.run(
-                ["git", "commit", "-m", message, "--allow-empty"],
-                cwd=workspace_path,
-                check=True,
-                capture_output=True
-            )
+    #        subprocess.run(
+    #            ["git", "commit", "-m", message, "--allow-empty"],
+    #            cwd=workspace_path,
+    #            check=True,
+    #            capture_output=True
+    #        )
 
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=workspace_path,
-                check=True,
-                capture_output=True,
-                text=True
-            )
+    #        result = subprocess.run(
+    #            ["git", "rev-parse", "HEAD"],
+    #            cwd=workspace_path,
+    #            check=True,
+    #            capture_output=True,
+    #            text=True
+    #        )
 
-            commit_hash = result.stdout.strip()
+    #        commit_hash = result.stdout.strip()
 
-            self.checkpoints.append({
-                'commit': commit_hash,
-                'message': message
-            })
+    #        self.checkpoints.append({
+    #            'commit': commit_hash,
+    #            'message': message
+    #        })
 
-            logger.debug(f"Created checkpoint: {commit_hash[:8]} - {message}")
+    #        logger.debug(f"Created checkpoint: {commit_hash[:8]} - {message}")
 
-            return commit_hash
+    #        return commit_hash
 
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to create checkpoint: {e}")
-            return ""
+    # except subprocess.CalledProcessError as e:
+    #     logger.error(f"Failed to create checkpoint: {e}")
+    #     return ""
 
     def rollback_to_checkpoint(self, checkpoint_index: int, workspace_path: Optional[Path] = None) -> bool:
         """
@@ -262,8 +295,8 @@ class RepositoryManager:
             logger.info(f"Rolled back to checkpoint {checkpoint_index}")
             return True
 
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Rollback failed: {e}")
+        except subprocess.CalledProcessError as err:
+            logger.error(f"Rollback failed: {err}")
             return False
 
     def get_file_content(self, filepath: str, workspace_path: Optional[Path] = None) -> Optional[str]:
@@ -287,8 +320,8 @@ class RepositoryManager:
 
         try:
             return full_path.read_text()
-        except Exception as e:
-            logger.error(f"Failed to read {filepath}: {e}")
+        except Exception as err:
+            logger.error(f"Failed to read {filepath}: {err}")
             return None
 
     def list_modified_files(self, workspace_path: Optional[Path] = None) -> List[str]:
@@ -324,8 +357,8 @@ class RepositoryManager:
             files = [f.strip() for f in result.stdout.split('\n') if f.strip()]
             return files
 
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to list modified files: {e}")
+        except subprocess.CalledProcessError as err:
+            logger.error(f"Failed to list modified files: {err}")
             return []
 
     def get_checkpoint_info(self) -> List[Dict[str, str]]:
@@ -358,3 +391,116 @@ class RepositoryManager:
 
         self.current_workspace = None
         self.checkpoints = []
+
+    def _install_dependencies(self, workspace_path: Path) -> bool:
+        """
+        Install project dependencies.
+        Tries multiple installation methods:
+        1. pip install -e .
+        2. pip install -r requirements.txt
+        3. pip install -r tests/requirements.txt
+        Args:
+            workspace_path: Path to repository workspace
+        Returns:
+            True if installation succeeded, False otherwise
+        """
+        logger.info("Installing project dependencies...")
+        timeout = 3000
+        try:
+            logger.info("Trying: pip install -e .")
+            result = subprocess.run(["pip", "install", "-e", ".", "--quiet"], cwd=workspace_path, capture_output=True,
+                                    text=True, timeout=timeout)
+
+            if result.returncode == 0:
+                logger.info("Dependencies installed via 'pip install -e .'")
+                return True
+            else:
+                logger.warning(f"pip install -e . failed: {result.stderr[:200]}")
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"pip install -e . timed out after {timeout / 60} minutes")
+        except Exception as err:
+            logger.warning(f"pip install -e . error: {err}")
+
+        requirements_txt = workspace_path / "requirements.txt"
+        if requirements_txt.exists():
+            try:
+                logger.info("Trying: pip install -r requirements.txt")
+                result = subprocess.run(["pip", "install", "-r", "requirements.txt", "--quiet"], cwd=workspace_path,
+                                        capture_output=True, text=True, timeout=timeout)
+
+                if result.returncode == 0:
+                    logger.info("Dependencies installed via requirements.txt")
+                    return True
+                else:
+                    logger.warning(f"requirements.txt install failed: {result.stderr[:200]}")
+
+            except Exception as err:
+                logger.warning(f"requirements.txt install error: {err}")
+
+        tests_requirements = workspace_path / "tests" / "requirements.txt"
+        if tests_requirements.exists():
+            try:
+                logger.info("Trying: pip install -r tests/requirements.txt")
+                result = subprocess.run(["pip", "install", "-r", "tests/requirements.txt", "--quiet"],
+                                        cwd=workspace_path, capture_output=True, text=True,
+                                        timeout=timeout)
+
+                if result.returncode == 0:
+                    logger.info("Dependencies installed via tests/requirements.txt")
+                    return True
+                else:
+                    logger.warning(f"tests/requirements.txt install failed: {result.stderr[:200]}")
+
+            except Exception as e:
+                logger.warning(f"tests/requirements.txt install error: {e}")
+
+        setup_py = workspace_path / "setup.py"
+        if setup_py.exists():
+            try:
+                logger.info("Trying: python setup.py develop")
+                result = subprocess.run(["python", "setup.py", "develop"], cwd=workspace_path, capture_output=True,
+                                        text=True, timeout=timeout)
+                if result.returncode == 0:
+                    logger.info("Dependencies installed via setup.py develop")
+                    return True
+
+            except Exception as err:
+                logger.warning(f"setup.py develop error: {err}")
+
+        logger.error("Failed to install dependencies via any method")
+        return False
+
+    def setup_repository_from_cache(self, session_id: str, cache_path: Path, base_commit: Optional[str] = None) -> Path:
+        """Setup repository by copying from cache instead of cloning."""
+        if not cache_path.exists():
+            raise FileNotFoundError(f"Cache path does not exist: {cache_path}")
+
+        if not (cache_path / ".git").exists():
+            raise ValueError(f"Cache path is not a git repository: {cache_path}")
+
+        workspace_path = self.workspace_base_dir / f"session_{session_id}"
+
+        if workspace_path.exists():
+            logger.warning(f"Workspace {workspace_path} already exists, removing...")
+            shutil.rmtree(workspace_path)
+
+        logger.info(f"Copying repository from cache: {cache_path}")
+        shutil.copytree(cache_path, workspace_path)
+        logger.info(f"Repository copied to: {workspace_path}")
+
+        if base_commit:
+            current_commit = self._get_current_commit(workspace_path)
+            if current_commit != base_commit:
+                logger.info(f"Checking out commit: {base_commit}")
+                self._checkout_commit(workspace_path, base_commit)
+
+        installation_success = self._install_dependencies(workspace_path)
+        if not installation_success:
+            logger.warning("Dependency installation failed - tests may not run correctly")
+
+        self._create_checkpoint(workspace_path=workspace_path, checkpoint_name="initial",
+                                message="Initial repository state from cache")
+
+        logger.info(f"Repository setup complete: {workspace_path}")
+        return workspace_path

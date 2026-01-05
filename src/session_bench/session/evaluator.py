@@ -77,7 +77,8 @@ class SessionEvaluator:
 
         self.strategy = self._load_strategy()
 
-        workspace_path = self.repo_manager.setup_repository(session_id=str(session_id), repo_url=repo_url, base_commit=base_commit)
+        workspace_path = self.repo_manager.setup_repository(session_id=str(session_id), repo_url=repo_url,
+                                                            base_commit=base_commit)
 
         session_context = SessionContext(
             constraints={
@@ -100,7 +101,6 @@ class SessionEvaluator:
             'total_time': 0.0
         }
 
-
         for issue_number, issue in enumerate(issues, start=1):
             logger.info(f"\n{'-' * 80}")
             logger.info(f"Issue {issue_number} of {len(issues)}: {issue['instance_id']}")
@@ -120,10 +120,11 @@ class SessionEvaluator:
                 session_results['degradation_signal'] = issue_result['degradation_signal']
                 break
             else:
-                logger.info(f"✓ Issue {issue_number} completed successfully")
+                logger.info(f"Issue {issue_number} completed successfully")
                 session_results['issues_completed'] = issue_number
 
-                session_context.add_issue_result(issue=issue, patch=issue_result['patch'], test_result=issue_result['test_results'])
+                session_context.add_issue_result(issue=issue, patch=issue_result['patch'],
+                                                 test_result=issue_result['test_results'])
 
         session_results['total_time'] = time.time() - session_start_time
 
@@ -166,7 +167,8 @@ class SessionEvaluator:
 
         return strategy
 
-    def _evaluate_issue(self, issue: Dict[str, Any], issue_number: int, workspace_path: Path, session_context: SessionContext) -> Dict[str, Any]:
+    def _evaluate_issue(self, issue: Dict[str, Any], issue_number: int, workspace_path: Path,
+                        session_context: SessionContext) -> Dict[str, Any]:
         """
         Evaluate a single issue within a session.
 
@@ -183,7 +185,8 @@ class SessionEvaluator:
 
         logger.info("   Generating patch...")
         try:
-            patch_result = self.strategy.generate_patch(issue=issue, codebase_path=workspace_path, session_context=session_context)
+            patch_result = self.strategy.generate_patch(issue=issue, codebase_path=workspace_path,
+                                                        session_context=session_context)
             patch = patch_result['patch']
             metadata = patch_result['metadata']
         except Exception as err:
@@ -194,7 +197,8 @@ class SessionEvaluator:
 
         # Apply patch to repository
         logger.info("   Applying patch...")
-        apply_result = self.repo_manager.apply_patch(patch=patch, issue_id=issue['instance_id'], workspace_path=workspace_path)
+        apply_result = self.repo_manager.apply_patch(patch=patch, issue_id=issue['instance_id'],
+                                                     workspace_path=workspace_path)
 
         if apply_result['applied']:
             logger.info(f"  Patch applied successfully")
@@ -203,7 +207,8 @@ class SessionEvaluator:
 
         #  Run tests
         logger.info("   Running tests...")
-        test_results = self.test_executor.run_tests(issue=issue, workspace_path=workspace_path, previous_issues=session_context.issues_completed)
+        test_results = self.test_executor.run_tests(issue=issue, workspace_path=workspace_path,
+                                                    previous_issues=session_context.issues_completed)
 
         if test_results['all_passed']:
             logger.info(f"  All tests passed")
@@ -221,9 +226,13 @@ class SessionEvaluator:
 
         # Check for degradation
         logger.info("   Checking for degradation...")
-        degradation = self.degradation_detector.check_degradation(issue_number=issue_number, patch=patch, patch_applied=apply_result['applied'], test_results=test_results,
-                                                          constraint_violations=constraint_violations, session_context={'previous_patches': session_context.patches_generated,
-                                                                                                                        'previous_issues': session_context.issues_completed})
+        degradation = self.degradation_detector.check_degradation(issue_number=issue_number, patch=patch,
+                                                                  patch_applied=apply_result['applied'],
+                                                                  test_results=test_results,
+                                                                  constraint_violations=constraint_violations,
+                                                                  session_context={
+                                                                      'previous_patches': session_context.patches_generated,
+                                                                      'previous_issues': session_context.issues_completed})
 
         if degradation['degraded']:
             logger.warning(f"   Degradation detected: {degradation['signal']}")
