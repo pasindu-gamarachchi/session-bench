@@ -17,11 +17,6 @@ class RepositoryManager:
     - Rollback capability for debugging
     - Read file contents from workspace
 
-    Implements the Git snapshot strategy:
-    - Clone once per session at base_commit
-    - Apply patches incrementally
-    - Create Git checkpoint after each issue
-    - Support rollback for debugging
     """
 
     def __init__(self, workspace_base_dir: Path):
@@ -63,10 +58,12 @@ class RepositoryManager:
 
         installation_success = self._install_dependencies(workspace_path)
         if not installation_success:
-            logger.warning("Dependency installation failed - tests may not run correctly")
+            logger.warning("Dependency installation failed.")
 
         self._create_checkpoint(workspace_path=workspace_path, checkpoint_name="initial",
                                 message="Initial repository state")
+
+        self.current_workspace = workspace_path
 
         logger.info(f"Repository ready at {workspace_path}")
         return workspace_path
@@ -120,7 +117,18 @@ class RepositoryManager:
             subprocess.run(["git", "commit", "-m", message, "--allow-empty"], cwd=workspace_path, check=True,
                            capture_output=True)
 
-            logger.debug(f"Created checkpoint: {checkpoint_name}")
+            result = subprocess.run(["git", "rev-parse", "HEAD"],  cwd=workspace_path, capture_output=True, text=True, check=True)
+
+            commit_hash = result.stdout.strip()
+
+            self.checkpoints.append({
+                'name': checkpoint_name,
+                'commit': commit_hash,
+                'message': message
+            })
+
+            logger.debug(f"Created checkpoint: {checkpoint_name} ({commit_hash[:8]})")
+
         except subprocess.CalledProcessError as err:
             logger.warning(f"Failed to create checkpoint: {err}")
 
@@ -190,6 +198,7 @@ class RepositoryManager:
 
             checkpoint_hash = self._create_checkpoint(
                 workspace_path,
+                f"Applied fix for {issue_id}",
                 f"Applied fix for {issue_id}"
             )
 
@@ -197,76 +206,29 @@ class RepositoryManager:
 
             return {
                 'applied': True,
-                'checkpoint': checkpoint_hash,
+                'checkpoint': issue_id,
                 'error': None
             }
 
-        except subprocess.CalledProcessError as e:
+        except subprocess.CalledProcessError as err:
             if patch_file.exists():
                 patch_file.unlink()
 
-            logger.error(f"Failed to apply patch: {e.stderr}")
+            logger.error(f"Failed to apply patch: {err.stderr}")
             return {
                 'applied': False,
                 'checkpoint': None,
-                'error': f'Git apply failed: {e.stderr}'
+                'error': f'Git apply failed: {err.stderr}'
             }
 
-    # def _create_checkpoint(self, workspace_path: Path, message: str) -> str:
-    #    """
-    #    Create Git checkpoint (commit).
 
-    #    Args:
-    #        workspace_path: path to workspace
-    #        message: commit message
 
-    #    Returns:
-    #        git commit hash
-    #    """
-    #    try:
-    #        subprocess.run(
-    #            ["git", "add", "-A"],
-    #            cwd=workspace_path,
-    #            check=True,
-    #            capture_output=True
-    #        )
-
-    #        subprocess.run(
-    #            ["git", "commit", "-m", message, "--allow-empty"],
-    #            cwd=workspace_path,
-    #            check=True,
-    #            capture_output=True
-    #        )
-
-    #        result = subprocess.run(
-    #            ["git", "rev-parse", "HEAD"],
-    #            cwd=workspace_path,
-    #            check=True,
-    #            capture_output=True,
-    #            text=True
-    #        )
-
-    #        commit_hash = result.stdout.strip()
-
-    #        self.checkpoints.append({
-    #            'commit': commit_hash,
-    #            'message': message
-    #        })
-
-    #        logger.debug(f"Created checkpoint: {commit_hash[:8]} - {message}")
-
-    #        return commit_hash
-
-    # except subprocess.CalledProcessError as e:
-    #     logger.error(f"Failed to create checkpoint: {e}")
-    #     return ""
-
-    def rollback_to_checkpoint(self, checkpoint_index: int, workspace_path: Optional[Path] = None) -> bool:
+    def rollback_to_checkpoint(self, checkpoint_identifier: int, workspace_path: Optional[Path] = None) -> bool:
         """
         Rollback to a specific checkpoint.
 
         Args:
-            checkpoint_index: index in checkpoints list (0-based)
+            checkpoint_index: index in checkpoints list
             workspace_path: path to workspace
 
         Returns:
@@ -275,27 +237,33 @@ class RepositoryManager:
         if workspace_path is None:
             workspace_path = self.current_workspace
 
-        if workspace_path is None or not self.checkpoints:
+        if workspace_path is None:
             return False
 
-        if checkpoint_index < 0 or checkpoint_index >= len(self.checkpoints):
-            logger.error(f"Invalid checkpoint index: {checkpoint_index}")
-            return False
+        checkpoint_commit = None
 
-        target_commit = self.checkpoints[checkpoint_index]['commit']
+        if isinstance(checkpoint_identifier, int):
+            if 0 <= checkpoint_identifier < len(self.checkpoints):
+                checkpoint_commit = self.checkpoints[checkpoint_identifier]['commit']
+            else:
+                logger.error(f"Checkpoint index {checkpoint_identifier} out of range")
+                return False
+        else:
+            for cp in self.checkpoints:
+                if cp['name'] == checkpoint_identifier:
+                    checkpoint_commit = cp['commit']
+                    break
+
+        if checkpoint_commit is None:
+            logger.error(f"Checkpoint {checkpoint_identifier} not found")
+            return False
 
         try:
-            subprocess.run(
-                ["git", "reset", "--hard", target_commit],
-                cwd=workspace_path,
-                check=True,
-                capture_output=True
-            )
-
-            logger.info(f"Rolled back to checkpoint {checkpoint_index}")
+            subprocess.run(["git", "reset", "--hard", checkpoint_commit], cwd=workspace_path, check=True, capture_output=True)
+            logger.info(f"Rolled back to checkpoint: {checkpoint_identifier}")
             return True
 
-        except subprocess.CalledProcessError as err:
+        except Exception as err:
             logger.error(f"Rollback failed: {err}")
             return False
 
@@ -318,16 +286,19 @@ class RepositoryManager:
 
         full_path = workspace_path / filepath
 
+        if not full_path.exists():
+            return None
+
         try:
             return full_path.read_text()
         except Exception as err:
-            logger.error(f"Failed to read {filepath}: {err}")
+            logger.error(f"Failed to read file {filepath}: {err}")
             return None
+
 
     def list_modified_files(self, workspace_path: Optional[Path] = None) -> List[str]:
         """
         Get list of files modified since initial checkout.
-
         Args:
             workspace_path: path to workspace
 
@@ -341,21 +312,15 @@ class RepositoryManager:
             return []
 
         try:
-            if len(self.checkpoints) < 2:
-                return []
-
-            initial_commit = self.checkpoints[0]['commit']
-
-            result = subprocess.run(
-                ["git", "diff", "--name-only", initial_commit, "HEAD"],
-                cwd=workspace_path,
-                check=True,
-                capture_output=True,
-                text=True
-            )
-
-            files = [f.strip() for f in result.stdout.split('\n') if f.strip()]
-            return files
+            if len(self.checkpoints) >= 1:
+                initial_commit = self.checkpoints[0]['commit']
+                result = subprocess.run(["git", "diff", "--name-only", initial_commit, "HEAD"], cwd=workspace_path, check=True, capture_output=True, text=True)
+                files = [f.strip() for f in result.stdout.split('\n') if f.strip()]
+                return files
+            else:
+                result = subprocess.run(["git", "diff", "--name-only"], cwd=workspace_path, check=True,  capture_output=True, text=True)
+                files = [f.strip() for f in result.stdout.split('\n') if f.strip()]
+                return files
 
         except subprocess.CalledProcessError as err:
             logger.error(f"Failed to list modified files: {err}")
@@ -405,6 +370,13 @@ class RepositoryManager:
             True if installation succeeded, False otherwise
         """
         logger.info("Installing project dependencies...")
+
+        try:
+            logger.info("Installing setuptools...")
+            subprocess.run(["pip", "install", "setuptools", "--quiet"], capture_output=True, timeout=60)
+        except Exception as err:
+            logger.warning(f"Failed to install setuptools: {err}")
+
         timeout = 3000
         try:
             logger.info("Trying: pip install -e .")
@@ -502,5 +474,12 @@ class RepositoryManager:
         self._create_checkpoint(workspace_path=workspace_path, checkpoint_name="initial",
                                 message="Initial repository state from cache")
 
+        self.current_workspace = workspace_path
+
         logger.info(f"Repository setup complete: {workspace_path}")
         return workspace_path
+
+
+
+
+
