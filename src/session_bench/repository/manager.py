@@ -159,9 +159,11 @@ class RepositoryManager:
             }
 
         patch_file = workspace_path / ".session_bench_patch.tmp"
+        patch_backup = workspace_path / f".session_bench_patch_{issue_id}.backup"
 
         try:
             patch_file.write_text(patch)
+            patch_backup.write_text(patch)
         except Exception as err:
             return {
                 'applied': False,
@@ -171,7 +173,7 @@ class RepositoryManager:
 
         try:
             result = subprocess.run(
-                ["git", "apply", "--check", str(patch_file)],
+                ["git", "apply", "--check", patch_file.name],
                 cwd=workspace_path,
                 capture_output=True,
                 text=True
@@ -179,6 +181,7 @@ class RepositoryManager:
 
             if result.returncode != 0:
                 logger.error(f"Patch check failed: {result.stderr}")
+                logger.error(f"Patch saved to: {patch_backup}")
                 patch_file.unlink()
                 return {
                     'applied': False,
@@ -187,7 +190,7 @@ class RepositoryManager:
                 }
 
             subprocess.run(
-                ["git", "apply", str(patch_file)],
+                ["git", "apply", patch_file.name],
                 cwd=workspace_path,
                 check=True,
                 capture_output=True,
